@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ECHO-LOCUS // 异常监测终端 V6</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- 引入更具黑客感的字体 -->
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --main-color: #ffb000; /* 琥珀色 */
+            --dim-color: #664d00;
+            --bg-color: #050505;
+            --panel-bg: #0a0a0a;
+            --alert-color: #ff3300;
+            --grid-line: rgba(255, 176, 0, 0.08);
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--main-color);
+            font-family: 'JetBrains Mono', monospace;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            font-size: 12px;
+            user-select: none;
+        }
+
+        /* 布局 */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 360px;
+            grid-template-rows: 40px 1fr 180px;
+            height: 100%;
+            gap: 2px;
+            background: #1a1a1a;
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: #141414;
+            color: #888;
+            padding: 0 12px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            border-bottom: 1px solid #333;
+            letter-spacing: 0.5px;
+            font-weight: bold;
+        }
+        .panel-header strong { color: var(--main-color); opacity: 0.9; }
+
+        /* 地图 */
+        #map {
+            height: 100%;
+            width: 100%;
+            background: #000;
+        }
+        .leaflet-layer {
+            filter: grayscale(100%) brightness(1.4) contrast(1.2) opacity(0.8);
+        }
+
+        /* 装饰网格 */
+        .digital-grid {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-image: 
+                linear-gradient(var(--grid-line) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+            background-size: 60px 60px;
+            pointer-events: none;
+            z-index: 400;
+        }
+
+        /* 实体 */
+        .blip-marker { transition: opacity 4s ease; }
+        .blip-core {
+            width: 5px; height: 5px;
+            background-color: var(--main-color);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--main-color);
+        }
+        .blip-ring {
+            position: absolute; top: -10px; left: -10px;
+            width: 25px; height: 25px;
+            border: 1px dashed var(--main-color);
+            border-radius: 50%;
+            animation: spin 10s linear infinite;
+            opacity: 0.5;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        .vanished { opacity: 0 !important; }
+
+        /* 按钮 */
+        .btn-terminal {
+            border: 1px solid var(--dim-color);
+            background: rgba(20,20,20,0.8);
+            color: var(--main-color);
+            padding: 12px;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.1s;
+            text-align: center;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+        .btn-terminal:hover:not(:disabled) {
+            background: var(--main-color);
+            color: #000;
+            box-shadow: 0 0 15px rgba(255, 176, 0, 0.3);
+        }
+        .btn-terminal:disabled {
+            border-color: #333;
+            color: #444;
+            cursor: progress;
+        }
+
+        /* 光标 */
+        .typing-cursor::after {
+            content: '█';
+            animation: blink 0.8s step-end infinite;
+            margin-left: 4px;
+            color: var(--main-color);
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0a0a0a; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+                grid-template-rows: 40px 1fr 240px 140px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-grid">
+    <!-- 顶栏 -->
+    <div class="panel col-span-full flex items-center justify-between px-4 z-50 border-b border-[#333] bg-[#0f0f0f]">
+        <div class="flex items-center gap-3">
+            <div id="status-light" class="w-2 h-2 bg-[var(--main-color)] rounded-full animate-pulse"></div>
+            <h1 class="text-lg font-bold tracking-widest text-[var(--main-color)]">ECHO-LOCUS <span class="text-[10px] opacity-40 font-normal">版本_6.0.2</span></h1>
+        </div>
+        <div class="text-[10px] text-[#555] font-mono hidden sm:block">
+            坐标: 30.747, 103.927 // 传感器: 高增益模式 // 状态: 监测中
+        </div>
+    </div>
+
+    <!-- 地图 -->
+    <div class="panel relative group border-r border-[#333]">
+        <div class="panel-header absolute top-0 left-0 w-full z-[500] bg-[#0a0a0a]/90 border-b border-[#333]">
+            <span>当前区域: 电子科技大学(清水河)</span>
+            <span id="entity-status" class="text-[var(--alert-color)] opacity-80">异常目标: --</span>
+        </div>
+        
+        <div class="digital-grid"></div>
+        <div id="map"></div>
+
+        <!-- 目标信息 -->
+        <div id="target-panel" class="absolute bottom-4 left-4 z-[500] bg-[#050505]/95 border border-[#444] p-3 w-56 hidden shadow-2xl backdrop-blur-sm">
+            <div class="flex justify-between items-center border-b border-[#333] pb-1 mb-2">
+                <span class="text-[10px] text-[#666]">特征哈希值</span>
+                <span id="t-id" class="text-xs font-bold text-[var(--main-color)]">--</span>
+            </div>
+            <div class="space-y-1 text-[11px] text-[#999]">
+                <div class="flex justify-between"><span class="opacity-50">相位状态:</span> <span id="t-phase" class="text-[#fff]">不稳定</span></div>
+                <div class="flex justify-between"><span class="opacity-50">估计距离:</span> <span id="t-dist">--</span></div>
+                <div class="mt-2 pt-2 border-t border-[#222] text-[var(--alert-color)] italic opacity-70">
+                    ! 警告：检测到非欧几里得几何结构
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 信号截获面板 -->
+    <div class="panel flex flex-col border-l border-[#333]">
+        <div class="panel-header">
+            <strong>频谱分析仪</strong>
+            <span class="opacity-40 text-[9px]">频段: 1420.4MHz</span>
+        </div>
+        
+        <!-- 波形 Canvas -->
+        <div class="h-28 bg-[#000] relative border-b border-[#333]">
+            <canvas id="wave-canvas" class="w-full h-full opacity-80"></canvas>
+            <div class="absolute top-2 right-2 text-[9px] text-[#444]">增益: +12dB</div>
+        </div>
+
+        <!-- 文本流 -->
+        <div class="flex-1 p-4 overflow-hidden relative bg-[#050505] flex flex-col">
+            <div id="text-stream" class="font-mono text-[12px] leading-loose text-[#ccc] break-words h-full overflow-y-auto pb-2 whitespace-pre-wrap scroll-smooth">
+                <span class="text-[#444]">> 系统初始化完成。<br>> 背景辐射过滤中...</span>
+            </div>
+            <!-- 底部渐变遮罩，防止文字突然切断 -->
+            <div class="absolute bottom-0 left-0 w-full h-4 bg-gradient-to-t from-[#050505] to-transparent pointer-events-none"></div>
+        </div>
+
+        <!-- 按钮 -->
+        <div class="p-3 border-t border-[#333] bg-[#0f0f0f]">
+            <button id="btn-decrypt" class="btn-terminal w-full" onclick="fetchAlienSignal()">
+                启动信号截获程序
+            </button>
+        </div>
+    </div>
+
+    <!-- 系统日志 -->
+    <div class="panel col-span-full flex flex-col border-t border-[#333]">
+        <div class="panel-header">
+            <strong>系统核心日志</strong>
+            <span class="opacity-30">/var/log/echo_sys</span>
+        </div>
+        <div id="sys-log" class="flex-1 p-2 overflow-y-auto font-mono text-[11px] text-[#888] space-y-1 bg-[#030303]">
+            <!-- 动态日志 -->
+        </div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    // --- 1. API 配置 ---
+    const API_KEY = "sk-junksednsaqbhlqynnadqlhggwsriywgmtavgajlsthzdapj";
+    const API_URL = "https://api.siliconflow.cn/v1/chat/completions";
+    const MODEL = "Pro/deepseek-ai/DeepSeek-V3.1-Terminus"; 
+
+    // --- 2. 配置 ---
+    const CONFIG = {
+        center: [30.7473, 103.9271],
+        entityCount: 5,
+        speed: 0.000003,
+        vanishChance: 0.001,
+        reappearChance: 0.004
+    };
+
+    let isIntercepting = false; // 核心状态：是否正在截获
+
+    // --- 3. 地图 ---
+    const map = L.map('map', {
+        center: CONFIG.center,
+        zoom: 16,
+        zoomControl: false,
+        attributionControl: false,
+        doubleClickZoom: false
+    });
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 }).addTo(map);
+
+    // --- 4. 实体逻辑 ---
+    function generateHash() {
+        return Math.random().toString(36).substring(2, 6).toUpperCase();
+    }
+
+    class Entity {
+        constructor() {
+            this.id = `[0x${generateHash()}]`; 
+            this.pos = this.getRandomPos();
+            this.target = [...this.pos];
+            this.state = 'IDLE';
+            this.pauseTime = 0;
+            this.marker = null;
+            this.initMarker();
+            this.loop();
+        }
+
+        getRandomPos() {
+            return [
+                CONFIG.center[0] + (Math.random() - 0.5) * 0.01,
+                CONFIG.center[1] + (Math.random() - 0.5) * 0.01
+            ];
+        }
+
+        initMarker() {
+            const icon = L.divIcon({
+                className: 'blip-wrapper',
+                html: `<div class="blip-core"></div>`,
+                iconSize: [6, 6],
+                iconAnchor: [3, 3]
+            });
+            this.marker = L.marker(this.pos, {icon: icon}).addTo(map);
+            this.marker.on('click', () => {
+                if(this.state !== 'LOST') selectTarget(this);
+            });
+        }
+
+        loop() {
+            if (this.state !== 'LOST' && Math.random() < CONFIG.vanishChance) this.loseSignal();
+            else if (this.state === 'LOST' && Math.random() < CONFIG.reappearChance) this.regainSignal();
+
+            if (this.state !== 'LOST') {
+                if (this.state === 'IDLE') {
+                    if (this.pauseTime > 0) this.pauseTime--;
+                    else { this.pickDestination(); this.state = 'MOVE'; }
+                } else if (this.state === 'MOVE') {
+                    if (this.move()) {
+                        this.state = 'IDLE';
+                        this.pauseTime = Math.random() * 200 + 100;
+                    }
+                }
+            }
+            setTimeout(() => this.loop(), 50);
+        }
+
+        loseSignal() {
+            this.state = 'LOST';
+            this.marker.getElement()?.classList.add('vanished');
+            logSys(`错误: 信号同步丢失 ${this.id}`, 'err');
+            updateCount();
+        }
+
+        regainSignal() {
+            this.pos[0] += (Math.random()-0.5) * 0.001;
+            this.pos[1] += (Math.random()-0.5) * 0.001;
+            this.marker.setLatLng(this.pos);
+            this.state = 'IDLE';
+            this.marker.getElement()?.classList.remove('vanished');
+            logSys(`信息: 重新捕获目标 ${this.id}`);
+            updateCount();
+        }
+
+        pickDestination() {
+            const dist = 0.0004 + Math.random() * 0.0004;
+            const angle = Math.random() * Math.PI * 2;
+            this.target = [
+                this.pos[0] + Math.sin(angle) * dist,
+                this.pos[1] + Math.cos(angle) * dist
+            ];
+        }
+
+        move() {
+            const dLat = this.target[0] - this.pos[0];
+            const dLng = this.target[1] - this.pos[1];
+            const dist = Math.sqrt(dLat*dLat + dLng*dLng);
+            if (dist < CONFIG.speed) { this.pos = this.target; return true; }
+            this.pos[0] += (dLat / dist) * CONFIG.speed;
+            this.pos[1] += (dLng / dist) * CONFIG.speed;
+            this.marker.setLatLng(this.pos);
+            return false;
+        }
+    }
+
+    const entities = [];
+    
+    function init() {
+        for(let i=0; i<CONFIG.entityCount; i++) entities.push(new Entity());
+        updateCount();
+        logSys("启动: 内核模块加载 [成功]");
+        logSys("网络: SILICONFLOW 接口已连接 [加密通道]");
+    }
+
+    function updateCount() {
+        const count = entities.filter(e => e.state !== 'LOST').length;
+        document.getElementById('entity-status').innerText = `异常目标数: ${count}`;
+    }
+
+    function selectTarget(e) {
+        document.getElementById('target-panel').classList.remove('hidden');
+        document.querySelectorAll('.blip-ring').forEach(el => el.remove());
+        if (e.marker.getElement()) {
+            const ring = document.createElement('div');
+            ring.className = 'blip-ring';
+            e.marker.getElement().appendChild(ring);
+        }
+        document.getElementById('t-id').innerText = e.id;
+        document.getElementById('t-dist').innerText = (Math.random() * 800 + 50).toFixed(1) + "米";
+        logSys(`指令: 锁定目标 ${e.id}`);
+    }
+
+    // --- 5. 核心：API & 中文信号 ---
+    async function fetchAlienSignal() {
+        const btn = document.getElementById('btn-decrypt');
+        const stream = document.getElementById('text-stream');
+        
+        btn.disabled = true;
+        btn.innerText = "正在接收数据流...";
+        isIntercepting = true; // 开启狂暴波形模式
+        logSys("警告: 检测到高带宽数据输入", "warn");
+
+        const startMarker = document.createElement('div');
+        startMarker.className = "mt-4 mb-2 text-[var(--main-color)] opacity-70 border-t border-[#333] pt-2";
+        startMarker.innerText = `>> 截获片段_${generateHash()} // 来源: 未知`;
+        stream.appendChild(startMarker);
+
+        const outputDiv = document.createElement('div');
+        outputDiv.className = "typing-cursor mb-4 text-[#eee] font-bold";
+        stream.appendChild(outputDiv);
+        
+        // 智能滚动：只在需要时滚动，避免剧烈跳动
+        stream.scrollTop = stream.scrollHeight;
+
+        try {
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: MODEL,
+                    messages: [
+                        {
+                            role: "system",
+                            content: "# Role:你是一个“近距离异种生物交流翻译器”。你的功能是截获并翻译伪装在用户身边的外星人（可能是伪装成同事、路人或隐形观察者）之间的短句交流。# Core Logic (核心逻辑):外星人理解世界的维度与人类不同。它们用**生物学、物理学或资源管理**的冷酷视角来描述人类的日常行为。* **不要抽象**：不要谈论宇宙大义或高维哲学。* **要具体**：聚焦在当前用户正在做的琐事上。* **陌生化描述**：    * 手机 -> 发光的玻璃砖 / 外部脑叶 / 数据喂食器    * 喝水 -> 补充冷却液 / 湿润生物腔体    * 睡觉 -> 系统待机 / 意识断连    * 撸猫 -> 抚摸寄生兽 / 这种低频振动生物# Constraints:1.  **极短**：输出仅限 1-2 句短语。2.  **口语化**：像是两个外星工人在闲聊。3.  **无废话**：不要输出“翻译如下”等前缀，直接给内容。# Output Format:> “ [翻译内容] ”# Example 1 (用户正在吃泡面):> “看，它在摄入那碗卷曲的碳水化合物，气味数据超标了。”# Example 2 (用户正在发呆):> “这个碳基生物的处理核心卡住了？它盯着墙壁已经 300 个心跳周期了。”# Example 3 (用户在看手机笑):> “它对着发光的玻璃露出了牙齿骨骼，看起来像是一种神经反射。”---# Start:请直接生成一句身边的外星人窃窃私语。" 
+                        },
+                        { role: "user", content: "Generate signal." }
+                    ],
+                    max_tokens: 100,
+                    temperature: 1.3
+                })
+            });
+
+            const data = await response.json();
+            const content = data.choices[0].message.content;
+
+            let i = 0;
+            const timer = setInterval(() => {
+                outputDiv.textContent += content.charAt(i);
+                // 平滑跟随滚动
+                stream.scrollTop = stream.scrollHeight;
+                i++;
+                if (i >= content.length) {
+                    clearInterval(timer);
+                    outputDiv.classList.remove('typing-cursor');
+                    btn.disabled = false;
+                    btn.innerText = "启动信号截获程序";
+                    isIntercepting = false; // 停止波形狂暴
+                    logSys("信息: 解码完成");
+                }
+            }, 80); // 稍微调慢打字速度，增加压迫感
+
+        } catch (error) {
+            outputDiv.innerHTML = `<span style="color:var(--alert-color)">致命错误: 远程主机重置了连接</span>`;
+            btn.disabled = false;
+            btn.innerText = "重试";
+            isIntercepting = false;
+        }
+    }
+
+    // --- 6. 狂暴波形 & 日志 ---
+    const cvs = document.getElementById('wave-canvas');
+    const ctx = cvs.getContext('2d');
+
+    function drawWave() {
+        const w = cvs.clientWidth; const h = cvs.clientHeight;
+        if(cvs.width !== w) { cvs.width = w; cvs.height = h; }
+
+        ctx.fillStyle = 'rgba(0,0,0,0.3)'; // 稍微多一点拖影
+        ctx.fillRect(0,0,w,h);
+        
+        // 如果正在截获，波形变红
+        ctx.strokeStyle = isIntercepting ? '#ffddaa' : '#ffb000';
+        ctx.lineWidth = isIntercepting ? 2 : 1;
+        ctx.beginPath();
+
+        const t = Date.now() / 150;
+        for(let x=0; x<w; x+=3) {
+            let y = h/2;
+            
+            if (isIntercepting) {
+                // 狂暴模式：剧烈的随机跳动
+                y += (Math.random() - 0.5) * h * 0.8;
+                // 偶尔加上正弦波干扰
+                y += Math.sin(x * 0.2 + t * 5) * 10;
+            } else {
+                // 待机模式：平稳的底噪
+                y += Math.sin(x * 0.05 + t) * 2;
+                y += (Math.random() - 0.5) * 4;
+            }
+
+            if(x===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        }
+        ctx.stroke();
+        requestAnimationFrame(drawWave);
+    }
+
+    function logSys(msg, type='info') {
+        const box = document.getElementById('sys-log');
+        const line = document.createElement('div');
+        const time = new Date().toLocaleTimeString('en-GB');
+        
+        let color = '#888';
+        if (type === 'warn') color = '#ffaa00';
+        if (type === 'err') color = '#cc4444';
+        
+        line.innerHTML = `<span style="opacity:0.4; margin-right:5px;">[${time}]</span><span style="color:${color}">${msg}</span>`;
+        box.prepend(line);
+        if(box.children.length > 25) box.lastChild.remove();
+    }
+
+    // 逼真的随机后台日志生成器 (汉化版)
+    setInterval(() => {
+        const events = [
+            { msg: "马上停止接触！马ma上停ds&*dmk11/*s", type: "warn" },
+            { msg: "核心: 扇区 0x4F 发生页面错误", type: "err" },
+            { msg: "网络: 发送心跳包 (ttl=64)", type: "info" },
+            { msg: "内存: 垃圾回收周期已启动", type: "info" },
+            { msg: "警告: 背景辐射峰值 (+0.2%)", type: "warn" },
+            { msg: "IO: 磁盘写入缓冲区刷新", type: "info" },
+            { msg: "安全: 端口 443 握手超时", type: "warn" },
+            { msg: "系统: 核心温度过高，触发降频", type: "warn" },
+            { msg: "数据: 奇偶校验通过", type: "info" }
+        ];
+        // 只有30%概率触发日志，避免刷屏
+        if(Math.random() > 0.7) {
+            const ev = events[Math.floor(Math.random() * events.length)];
+            logSys(ev.msg, ev.type);
+        }
+    }, 2000);
+
+    init();
+    drawWave();
+
+</script>
+</body>
+</html>
